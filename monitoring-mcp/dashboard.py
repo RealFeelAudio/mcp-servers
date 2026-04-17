@@ -1,15 +1,22 @@
 """
 Claude Session Monitor — Dashboard
 Run: python C:/streamdeck-setup/monitoring-mcp/dashboard.py
-Reads C:/streamdeck-setup/events/monitoring.json and auto-refreshes every 5s.
+- Minimizes to system tray on close (right-click tray icon to quit)
+- Sound alerts at 45 min (single tone) and 60 min (triple tone)
+- Threshold slider built in — no need to ask Claude to change it
 """
 
 import json
 import os
+import threading
+import time
+import winsound
 from datetime import datetime, timezone
 from tkinter import messagebox
 
 import customtkinter as ctk
+import pystray
+from PIL import Image, ImageDraw
 
 MONITORING_FILE = r"C:\streamdeck-setup\events\monitoring.json"
 REFRESH_MS      = 5000
@@ -19,7 +26,6 @@ BLINK_FAST_MS   = 280
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ── colours ──────────────────────────────────────────────────────────────────
 COLOR_OK       = "#2ecc71"
 COLOR_WARN     = "#f39c12"
 COLOR_CRITICAL = "#e74c3c"
@@ -29,7 +35,7 @@ COLOR_PANEL    = "#16213e"
 COLOR_CARD     = "#0f3460"
 COLOR_TEXT     = "#e0e0e0"
 COLOR_SUBTEXT  = "#a0a0b0"
-COLOR_INVIS    = COLOR_BG      # used to "hide" text during blink-off
+COLOR_INVIS    = COLOR_BG
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -74,11 +80,7 @@ def compute_health(elapsed_min: float, threshold: int) -> str:
 
 
 def health_color(health: str) -> str:
-    return {
-        "OK":       COLOR_OK,
-        "WARN":     COLOR_WARN,
-        "CRITICAL": COLOR_CRITICAL,
-    }.get(health, COLOR_DIM)
+    return {"OK": COLOR_OK, "WARN": COLOR_WARN, "CRITICAL": COLOR_CRITICAL}.get(health, COLOR_DIM)
 
 
 def health_badge(health: str) -> str:
@@ -89,6 +91,32 @@ def health_badge(health: str) -> str:
     }.get(health, "— —")
 
 
+def make_tray_image(color_hex: str) -> Image.Image:
+    """Create a solid colored circle for the tray icon."""
+    img  = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    r    = int(color_hex[1:3], 16)
+    g    = int(color_hex[3:5], 16)
+    b    = int(color_hex[5:7], 16)
+    draw.ellipse([4, 4, 60, 60], fill=(r, g, b, 255))
+    return img
+
+
+def play_warn_sound():
+    threading.Thread(
+        target=lambda: winsound.Beep(880, 500),
+        daemon=True
+    ).start()
+
+
+def play_critical_sound():
+    def _beep():
+        for _ in range(3):
+            winsound.Beep(1200, 280)
+            time.sleep(0.12)
+    threading.Thread(target=_beep, daemon=True).start()
+
+
 # ── app ──────────────────────────────────────────────────────────────────────
 
 class MonitorApp(ctk.CTk):
@@ -96,22 +124,64 @@ class MonitorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Claude Session Monitor")
-        self.geometry("480x680")
-        self.minsize(420, 600)
+        self.geometry("480x740")
+        self.minsize(420, 640)
         self.resizable(True, True)
         self.configure(fg_color=COLOR_BG)
 
-        self._health      = "OK"
-        self._blink_on    = True
-        self._blink_after = None
+        self._health           = "OK"
+        self._blink_on         = True
+        self._blink_after      = None
+        self._warn_sound_fired = False
+        self._crit_sound_fired = False
+        self._tray_icon        = None
+        self._quitting         = False
 
         self._build_ui()
+        self._setup_tray()
+        self.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
         self._refresh()
+
+    # ── tray ─────────────────────────────────────────────────────────────────
+
+    def _setup_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem("Show",          self._show_from_tray, default=True),
+            pystray.MenuItem("Reset Session", lambda i, it: self.after(0, self._reset_session)),
+            pystray.MenuItem("Clear Alerts",  lambda i, it: self.after(0, self._clear_alerts)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit",          self._quit_app),
+        )
+        self._tray_icon = pystray.Icon(
+            "claude-monitor",
+            make_tray_image(COLOR_OK),
+            "Claude Monitor — OK",
+            menu
+        )
+        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+
+    def _show_from_tray(self, icon=None, item=None):
+        self.after(0, self.deiconify)
+        self.after(0, self.lift)
+
+    def _minimize_to_tray(self):
+        self.withdraw()
+
+    def _quit_app(self, icon=None, item=None):
+        self._quitting = True
+        if self._tray_icon:
+            self._tray_icon.stop()
+        self.after(0, self.destroy)
+
+    def _update_tray(self, health: str):
+        if self._tray_icon:
+            self._tray_icon.icon  = make_tray_image(health_color(health))
+            self._tray_icon.title = f"Claude Monitor — {health}"
 
     # ── layout ───────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # header bar
+        # header
         header = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=0)
         header.pack(fill="x")
 
@@ -152,7 +222,6 @@ class MonitorApp(ctk.CTk):
         )
         self.lbl_since.pack(pady=(0, 8))
 
-        # progress bar + percentage line
         self.progress_bar = ctk.CTkProgressBar(
             timer_frame, height=10, corner_radius=5,
             fg_color=COLOR_CARD, progress_color=COLOR_OK
@@ -172,9 +241,41 @@ class MonitorApp(ctk.CTk):
         stats_frame.pack(fill="x", padx=16, pady=6)
         stats_frame.columnconfigure((0, 1, 2), weight=1, uniform="col")
 
-        self.card_tools     = self._stat_card(stats_frame, "TOOL CALLS", "0", 0)
-        self.card_stops     = self._stat_card(stats_frame, "RESPONSES",  "0", 1)
+        self.card_tools     = self._stat_card(stats_frame, "TOOL CALLS", "0",      0)
+        self.card_stops     = self._stat_card(stats_frame, "RESPONSES",  "0",      1)
         self.card_threshold = self._stat_card(stats_frame, "THRESHOLD",  "60 min", 2)
+
+        # threshold slider
+        slider_frame = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=12)
+        slider_frame.pack(fill="x", padx=16, pady=6)
+
+        slider_top = ctk.CTkFrame(slider_frame, fg_color="transparent")
+        slider_top.pack(fill="x", padx=14, pady=(10, 4))
+
+        ctk.CTkLabel(
+            slider_top, text="SESSION THRESHOLD",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLOR_SUBTEXT
+        ).pack(side="left")
+
+        self.lbl_slider_val = ctk.CTkLabel(
+            slider_top, text="60 min",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_TEXT
+        )
+        self.lbl_slider_val.pack(side="right")
+
+        self.threshold_slider = ctk.CTkSlider(
+            slider_frame, from_=15, to=120,
+            number_of_steps=21,
+            fg_color=COLOR_CARD,
+            progress_color=COLOR_OK,
+            button_color=COLOR_TEXT,
+            command=self._on_slider_drag
+        )
+        self.threshold_slider.set(60)
+        self.threshold_slider.pack(fill="x", padx=14, pady=(0, 14))
+        self.threshold_slider.bind("<ButtonRelease-1>", self._on_slider_release)
 
         # recent events
         events_frame = ctk.CTkFrame(self, fg_color=COLOR_PANEL, corner_radius=12)
@@ -264,22 +365,43 @@ class MonitorApp(ctk.CTk):
         val.pack(pady=(0, 10))
         return val
 
+    # ── slider ───────────────────────────────────────────────────────────────
+
+    def _on_slider_drag(self, value):
+        mins = int(round(value / 5) * 5)
+        self.lbl_slider_val.configure(text=f"{mins} min")
+        self.card_threshold.configure(text=f"{mins} min")
+
+    def _on_slider_release(self, event=None):
+        mins = int(round(self.threshold_slider.get() / 5) * 5)
+        self.threshold_slider.set(mins)
+        data = load_data()
+        if data:
+            data["threshold_minutes"] = mins
+            data["warn_acked"]        = False
+            data["critical_acked"]    = False
+            save_data(data)
+        self._warn_sound_fired = False
+        self._crit_sound_fired = False
+
     # ── actions ──────────────────────────────────────────────────────────────
 
     def _clear_alerts(self):
         data = load_data()
         if not data:
             return
-        data["alerts"]        = []
-        data["warn_acked"]    = True
+        data["alerts"]         = []
+        data["warn_acked"]     = True
         data["critical_acked"] = True
         save_data(data)
-        self._refresh_now()
+        self._warn_sound_fired = False
+        self._crit_sound_fired = False
+        self._update_display(schedule_next=False)
 
     def _reset_session(self):
-        data = load_data()
+        data   = load_data()
         thresh = data.get("threshold_minutes", 60) if data else 60
-        fresh = {
+        save_data({
             "session_start":     datetime.now(timezone.utc).isoformat(),
             "last_event":        datetime.now(timezone.utc).isoformat(),
             "tool_count":        0,
@@ -289,11 +411,15 @@ class MonitorApp(ctk.CTk):
             "warn_acked":        False,
             "critical_acked":    False,
             "events":            []
-        }
-        save_data(fresh)
-        self._refresh_now()
+        })
+        self._warn_sound_fired = False
+        self._crit_sound_fired = False
+        self._stop_blink()
+        self._health = "OK"
+        self.lbl_timer.configure(text_color=COLOR_TEXT)
+        self._update_display(schedule_next=False)
 
-    # ── blink logic ──────────────────────────────────────────────────────────
+    # ── blink ─────────────────────────────────────────────────────────────────
 
     def _stop_blink(self):
         if self._blink_after is not None:
@@ -308,21 +434,19 @@ class MonitorApp(ctk.CTk):
     def _do_blink(self, fast: bool):
         color = health_color(self._health) if self._blink_on else COLOR_INVIS
         self.lbl_timer.configure(text_color=color)
-        self._blink_on = not self._blink_on
-        interval = BLINK_FAST_MS if fast else BLINK_SLOW_MS
+        self._blink_on    = not self._blink_on
+        interval          = BLINK_FAST_MS if fast else BLINK_SLOW_MS
         self._blink_after = self.after(interval, lambda: self._do_blink(fast))
 
     # ── refresh ──────────────────────────────────────────────────────────────
 
-    def _refresh_now(self):
-        """Immediate refresh without rescheduling the 5s loop."""
-        self._update_display(schedule_next=False)
-
     def _refresh(self):
-        """Refresh and schedule next 5s tick."""
         self._update_display(schedule_next=True)
 
     def _update_display(self, schedule_next: bool = True):
+        if self._quitting:
+            return
+
         data = load_data()
 
         if not data:
@@ -342,27 +466,40 @@ class MonitorApp(ctk.CTk):
         health        = compute_health(elapsed_min, threshold)
         hcolor        = health_color(health)
 
-        # manage blink state
-        if health == "CRITICAL":
-            if self._health != "CRITICAL":
-                self._health = "CRITICAL"
-                self._start_blink(fast=True)
-        elif health == "WARN":
-            if self._health != "WARN":
-                self._health = "WARN"
-                self._start_blink(fast=False)
-        else:
-            if self._health != "OK":
-                self._health = "OK"
-                self._stop_blink()
-                self.lbl_timer.configure(text_color=COLOR_TEXT)
+        # sync slider if threshold changed externally
+        self.threshold_slider.set(threshold)
+        self.lbl_slider_val.configure(text=f"{threshold} min")
 
-        # timer text (only set text when not blinking so blink controls color)
+        # sound alerts (fire once per crossing)
+        if health == "CRITICAL" and not self._crit_sound_fired:
+            play_critical_sound()
+            self._crit_sound_fired = True
+            self._warn_sound_fired = True
+        elif health == "WARN" and not self._warn_sound_fired:
+            play_warn_sound()
+            self._warn_sound_fired = True
+
+        # blink
+        if health == "CRITICAL" and self._health != "CRITICAL":
+            self._health = "CRITICAL"
+            self._start_blink(fast=True)
+        elif health == "WARN" and self._health != "WARN":
+            self._health = "WARN"
+            self._start_blink(fast=False)
+        elif health == "OK" and self._health != "OK":
+            self._health = "OK"
+            self._stop_blink()
+            self.lbl_timer.configure(text_color=COLOR_TEXT)
+
+        # tray icon color
+        self._update_tray(health)
+
+        # timer
         self.lbl_timer.configure(text=format_duration(elapsed_sec))
         if health == "OK":
             self.lbl_timer.configure(text_color=COLOR_TEXT)
 
-        # since label
+        # started label
         try:
             dt = datetime.fromisoformat(session_start).astimezone()
             self.lbl_since.configure(text=f"started {dt.strftime('%I:%M %p').lstrip('0')}")
@@ -378,12 +515,8 @@ class MonitorApp(ctk.CTk):
         pct_int   = int(pct_raw * 100)
         self.progress_bar.set(pct_raw)
         self.progress_bar.configure(progress_color=hcolor)
-
-        if remaining < 1:
-            remain_str = f"{int(remaining * 60)} sec remaining"
-        else:
-            remain_str = f"{round(remaining, 1)} min remaining"
-
+        remain_str = (f"{int(remaining * 60)} sec remaining"
+                      if remaining < 1 else f"{round(remaining, 1)} min remaining")
         self.lbl_progress.configure(
             text=f"{pct_int}% of session limit  •  {remain_str}",
             text_color=hcolor
@@ -394,7 +527,7 @@ class MonitorApp(ctk.CTk):
         self.card_stops.configure(text=str(data.get("stop_count", 0)))
         self.card_threshold.configure(text=f"{threshold} min")
 
-        # recent events (newest first)
+        # recent events
         events = data.get("events", [])[-12:]
         lines  = []
         for ev in reversed(events):
@@ -411,21 +544,16 @@ class MonitorApp(ctk.CTk):
         # alerts
         alerts = data.get("alerts", [])
         if alerts:
-            lines = []
-            for a in alerts:
-                icon = "✖" if a.get("type") == "session_critical" else "⚠"
-                lines.append(f"  {icon}  {a.get('message', '')}")
-            self._set_textbox(self.alerts_box, "\n".join(lines))
+            alines = [f"  {'✖' if a.get('type') == 'session_critical' else '⚠'}  {a.get('message', '')}"
+                      for a in alerts]
+            self._set_textbox(self.alerts_box, "\n".join(alines))
             crit = any(a.get("type") == "session_critical" for a in alerts)
             self.alerts_box.configure(text_color=COLOR_CRITICAL if crit else COLOR_WARN)
         else:
             self._set_textbox(self.alerts_box, "  No active alerts.")
             self.alerts_box.configure(text_color=COLOR_OK)
 
-        # footer
-        self.lbl_updated.configure(
-            text=f"updated {datetime.now().strftime('%H:%M:%S')}"
-        )
+        self.lbl_updated.configure(text=f"updated {datetime.now().strftime('%H:%M:%S')}")
 
         if schedule_next:
             self.after(REFRESH_MS, self._refresh)
@@ -438,7 +566,7 @@ class MonitorApp(ctk.CTk):
         box.configure(state="disabled")
 
 
-# ── entry point ──────────────────────────────────────────────────────────────
+# ── entry ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = MonitorApp()
