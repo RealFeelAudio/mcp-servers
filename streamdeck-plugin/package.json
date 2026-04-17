@@ -1,0 +1,17 @@
+{
+  "name": "streamdeck-claude-bridge",
+  "version": "1.0.0",
+  "description": "Stream Deck plugin that bridges button events to Claude via MCP",
+  "main": "bin/plugin.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0"
+  },
+  "dependencies": {
+    "ws": "^8.17.0"
+  }
+}

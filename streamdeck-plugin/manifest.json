@@ -1,0 +1,26 @@
+{
+  "Author": "RealFeelAudio",
+  "CodePath": "bin/plugin.js",
+  "Description": "Bridges Stream Deck button presses to Claude via MCP event log.",
+  "Name": "Claude Bridge",
+  "Icon": "icons/plugin",
+  "Version": "1.0.0",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.0" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "Category": "Claude",
+  "CategoryIcon": "icons/category",
+  "URL": "https://github.com/RealFeelAudio/mcp-servers",
+  "UUID": "com.claude.streamdeck.bridge",
+  "Actions": [
+    {
+      "Icon": "icons/action",
+      "Name": "Claude Bridge Button",
+      "Tooltip": "Log this button press to the Claude MCP event log.",
+      "UUID": "com.claude.streamdeck.bridge.button",
+      "States": [{ "Image": "icons/action", "Title": "Claude" }],
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "inspector.html"
+    }
+  ]
+}
