@@ -9,10 +9,10 @@ import sys
 import subprocess
 from datetime import datetime, timezone
 
-MONITORING_FILE  = r"C:\streamdeck-setup\events\monitoring.json"
-TOAST_SCRIPT     = r"C:\streamdeck-setup\monitoring-mcp\toast.ps1"
-SESSION_GAP_MIN  = 30
-MAX_EVENTS       = 200
+MONITORING_FILE   = r"C:\streamdeck-setup\events\monitoring.json"
+TOAST_SCRIPT      = r"C:\streamdeck-setup\monitoring-mcp\toast.ps1"
+SESSION_GAP_MIN   = 30
+MAX_EVENTS        = 200
 DEFAULT_THRESHOLD = 60
 
 
@@ -52,6 +52,8 @@ def new_session() -> dict:
         "stop_count":        0,
         "threshold_minutes": DEFAULT_THRESHOLD,
         "alerts":            [],
+        "warn_acked":        False,
+        "critical_acked":    False,
         "events":            []
     }
 
@@ -69,10 +71,9 @@ def toast(title: str, message: str) -> None:
 
 
 def main():
-    # Read hook payload from stdin
     try:
-        raw   = sys.stdin.read()
-        hook  = json.loads(raw) if raw.strip() else {}
+        raw  = sys.stdin.read()
+        hook = json.loads(raw) if raw.strip() else {}
     except Exception:
         hook = {}
 
@@ -102,35 +103,44 @@ def main():
 
     elif event_type == "stop":
         data["stop_count"] = data.get("stop_count", 0) + 1
-        stop_reason = hook.get("stop_reason", "end_turn")
-        entry["stop_reason"] = stop_reason
-        # Toast for task complete
+        entry["stop_reason"] = hook.get("stop_reason", "end_turn")
         toast("Claude finished", f"Task complete — {data['tool_count']} tool calls this session")
 
     data.setdefault("events", []).append(entry)
     if len(data["events"]) > MAX_EVENTS:
         data["events"] = data["events"][-MAX_EVENTS:]
 
-    # Check threshold
-    thresh  = data.get("threshold_minutes", DEFAULT_THRESHOLD)
-    elapsed = elapsed_minutes(data["session_start"])
-    alerts  = data.get("alerts", [])
+    # Check threshold — respect acked flags so Clear All stays cleared
+    thresh   = data.get("threshold_minutes", DEFAULT_THRESHOLD)
+    elapsed  = elapsed_minutes(data["session_start"])
+    alerts   = data.get("alerts", [])
+    warn_pct = thresh * 0.75
 
-    warn_threshold = thresh * 0.75
-    already_warned = any(a.get("type") == "session_warn" for a in alerts)
-    already_critical = any(a.get("type") == "session_critical" for a in alerts)
+    warn_acked     = data.get("warn_acked", False)
+    critical_acked = data.get("critical_acked", False)
 
-    if elapsed >= thresh and not already_critical:
-        alert = {"type": "session_critical", "timestamp": now(),
-                 "message": f"Session exceeded {thresh} min ({round(elapsed,1)} min elapsed). Start a new session."}
+    if elapsed >= thresh and not critical_acked:
+        alert = {
+            "type":    "session_critical",
+            "timestamp": now(),
+            "message": f"Session exceeded {thresh} min ({round(elapsed, 1)} min elapsed). Start a new session."
+        }
+        # Replace any existing critical alert
+        alerts = [a for a in alerts if a.get("type") != "session_critical"]
         alerts.append(alert)
-        toast("Start a new Claude session", f"{round(elapsed,1)} min elapsed — threshold reached")
+        toast("Start a new Claude session", f"{round(elapsed, 1)} min elapsed — threshold reached")
 
-    elif elapsed >= warn_threshold and not already_warned:
-        alert = {"type": "session_warn", "timestamp": now(),
-                 "message": f"Session at {round(elapsed,1)} min — {thresh}-min threshold approaching."}
-        alerts.append(alert)
-        toast("Claude session check", f"{round(elapsed,1)} min in — consider wrapping up soon")
+    elif elapsed >= warn_pct and not warn_acked and not critical_acked:
+        already_warned = any(a.get("type") == "session_warn" for a in alerts)
+        if not already_warned:
+            pct = int((elapsed / thresh) * 100)
+            alert = {
+                "type":    "session_warn",
+                "timestamp": now(),
+                "message": f"You've used ~{pct}% of your session limit ({round(elapsed, 1)} of {thresh} min)."
+            }
+            alerts.append(alert)
+            toast("Claude session check", f"{pct}% of session limit used — consider wrapping up")
 
     data["alerts"] = alerts
     save(data)
