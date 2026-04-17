@@ -1,8 +1,8 @@
 {
   "session_start": "2026-04-17T01:49:08.385412+00:00",
-  "last_event": "2026-04-17T01:49:12.256176+00:00",
-  "tool_count": 2,
-  "stop_count": 0,
+  "last_event": "2026-04-17T01:56:16.996247+00:00",
+  "tool_count": 5,
+  "stop_count": 2,
   "threshold_minutes": 60,
   "alerts": [],
   "events": [
@@ -15,6 +15,31 @@
       "timestamp": "2026-04-17T01:49:12.256176+00:00",
       "type": "post_tool",
       "tool": "Edit"
+    },
+    {
+      "timestamp": "2026-04-17T01:49:19.337351+00:00",
+      "type": "post_tool",
+      "tool": "Bash"
+    },
+    {
+      "timestamp": "2026-04-17T01:49:26.541346+00:00",
+      "type": "stop",
+      "stop_reason": "end_turn"
+    },
+    {
+      "timestamp": "2026-04-17T01:53:14.736599+00:00",
+      "type": "stop",
+      "stop_reason": "end_turn"
+    },
+    {
+      "timestamp": "2026-04-17T01:55:30.745497+00:00",
+      "type": "post_tool",
+      "tool": "Bash"
+    },
+    {
+      "timestamp": "2026-04-17T01:56:16.996247+00:00",
+      "type": "post_tool",
+      "tool": "Write"
     }
   ]
 }
